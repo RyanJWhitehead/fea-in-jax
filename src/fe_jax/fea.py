@@ -622,8 +622,8 @@ def __element_forcing_function(
     J_qpd = jnp.einsum("nd,qnp->qpd", x_nd, dphi_dxi_qnp)
     det_J_q = jnp.linalg.det(J_qpd)
     x_qd = jnp.einsum("nd,qn -> qd", x_nd, phi_qn)
-    f_qd = forcing_function(x_qd)
-    return jnp.einsum("qd,qn,q->nd",f_qd,phi_qn,det_J_q * W_q),None
+    f_qu = forcing_function(x_qd)
+    return jnp.einsum("qu,qn,q->nu",f_qu,phi_qn,det_J_q * W_q),None
 
 
 def solve_nonlinear_step(
