@@ -400,6 +400,7 @@ def calculate_jacobian_diag_wo_constraints(
 def _calculate_residual_wo_constraints_batch(
     element_residual_func: jax.tree_util.Partial,
     constitutive_model: jax.tree_util.Partial,
+    forcing_function: jax.tree_util.Partial,
     material_params: jnp.ndarray,
     internal_state: jnp.ndarray,
     x_end: jnp.ndarray,
@@ -444,6 +445,9 @@ def _calculate_residual_wo_constraints_batch(
         in_axes.append(None if internal_state.ndim < 3 else 0)
     if is_required(element_residual_func,"constitutive_model"):
         resid_args.append(constitutive_model)
+        in_axes.append(None)
+    if is_required(element_residual_func,"forcing_function"):
+        resid_args.append(forcing_function if forcing_function is not None else lambda *args:0)
         in_axes.append(None)
 
     # A vmap'ed version of the element residual function that maps over the elements
@@ -490,6 +494,7 @@ def calculate_residual_wo_constraints(
         _calculate_residual_wo_constraints_batch(
             element_residual_func=element_residual_func,
             constitutive_model=ebc.constitutive_models[i],
+            forcing_function=ebc.forcing_functions[i],
             material_params=ebc.get_material_params(i),
             internal_state=ebc.get_internal_state(i),
             x_end=ebc.get_x(i),
@@ -546,6 +551,7 @@ def calculate_residual_w_constraints(
     assembly_map_b: list[AssemblyMap],
     constraints: ConstraintSystem,
     f_ext,
+    rhs:jnp.ndarray|None = None
 ):
     """
     Compute the residual vector and updated internal state variables given the current
@@ -558,6 +564,8 @@ def calculate_residual_w_constraints(
     assembly_map_b        : list of assembly maps for each element batch
     u_f                   : current solution (displacement), ndarray[float, (V * D)]
     constraints           : system of linear constraints (MultiPointConstraints and Dirichlet BCs)
+    f_ext                 : load vector (for Neumann BCs)
+    rhs                   : rhs load vector for inhomogeneous PDEs (None if PDE is homogeneous)
 
     Returns
     -------
@@ -579,6 +587,8 @@ def calculate_residual_w_constraints(
         u_f=u_f_w_constraints,
     )
 
+    if rhs is not None:
+        R_f = R_f - rhs
     # Zero out terms corresponding to Dirichlet BCs and add (solution - what it should be) for those constrained DoFs.
     # This will ensure there will be a 1 on the diagonal of the Jacobian and also return the right residual.
     # debug_print(R_f)
@@ -592,6 +602,28 @@ def calculate_residual_w_constraints(
 def __extract_first_element(func, u_f):
     """Executes the function and extracts the first element of the returned tuple."""
     return func(u_f=u_f)[0]
+
+@jax.tree_util.Partial
+@jax.jit
+def __element_forcing_function(
+    x_nd: jnp.ndarray,  
+    phi_qn: jnp.ndarray,
+    dphi_dxi_qnp:jnp.ndarray,
+    W_q: jnp.ndarray,
+    forcing_function:Callable
+):
+    """
+    Minimal "residual" to integrate the f(x)phi(x) term that appears on the rhs of the inhomogeneous PDE N(u)=f(x) in weak form.
+    This is integrated once at the start of solve_nonlinear_step, and assembled into the dof-level rhs vector, 
+    allowing the full residual to be done with only one additional global dof subtraction beyond the computation needed for the operator N.
+    If f is varying, or depends on u, or something else that makes this approach problematic, 
+    that suggests that in fact f should be folded into the actual element residual function rather than treated as a separate forcing function
+    """
+    J_qpd = jnp.einsum("nd,qnp->qpd", x_nd, dphi_dxi_qnp)
+    det_J_q = jnp.linalg.det(J_qpd)
+    x_qd = jnp.einsum("nd,qn -> qd", x_nd, phi_qn)
+    f_qd = forcing_function(x_qd)
+    return jnp.einsum("qd,qn,q->nd",f_qd,phi_qn,det_J_q * W_q),None
 
 
 def solve_nonlinear_step(
@@ -643,6 +675,15 @@ def solve_nonlinear_step(
     #     )
     # """
 
+    if any([f is not None for f in ebc.forcing_functions]):
+        rhs_vector,_ = calculate_residual_wo_constraints(
+            __element_forcing_function,
+            ebc,
+            assembly_map_b,
+            u_0_g
+        )
+    else:
+        rhs_vector = None
     # Function that produces (R(u), ISVs)
     residual_isv_func_w_constraints = jax.jit(
         partial(
@@ -652,6 +693,7 @@ def solve_nonlinear_step(
             assembly_map_b=assembly_map_b,
             constraints=constraints,
             f_ext=f_ext,
+            rhs = rhs_vector
         )
     )
 

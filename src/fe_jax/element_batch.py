@@ -32,6 +32,8 @@ class ElementBatch:
     # all quad points but varying across elements [shape should be (E, I)], or 3) varying across
     # each quad point / element in the batch [shape should be (E, Q, I)], respectively.
     internal_state: jnp.ndarray | None = None
+    # A callable forcing function for this batch of elements, which if not None is integrated once at the beginning of solve_nonlinear_step to produce a rhs dof vector
+    forcing_function: jax.tree_util.Partial|None=None
 
     def __post_init__(self):
         Q = get_quadrature(fe_type=self.fe_type)[0].shape[0]

@@ -146,6 +146,9 @@ class ElementBatchCollection:
     constitutive_models: tuple[jax.tree_util.Partial, ...] = struct.field(
         pytree_node=False
     )
+    forcing_functions: tuple[jax.tree_util.Partial|None,...] = struct.field(
+        pytree_node=False
+    )
 
     # --- Offsets / sizes into expanded arrays for slicing ---
 
@@ -467,6 +470,7 @@ def batch_to_collection(
         constitutive_models=tuple(
             [b.constitutive_model for b in element_batches]
         ),
+        forcing_functions=tuple([b.forcing_function for b in element_batches]),
         # --- Offsets / sizes into expanded arrays for slicing ---
         EN_offsets=jnp.hstack(
             [jnp.array([0]), jnp.cumsum(jnp.array(E) * jnp.array(N))]
